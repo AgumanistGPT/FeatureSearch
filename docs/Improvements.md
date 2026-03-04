@@ -1,39 +1,39 @@
-# Improvements
+﻿# Идеи для улучшения
 
-## 1) Robustness for cases (A) and (B)
+## 1) Устойчивость для случаев (A) и (B)
 
-- Add explicit two-sided short-line analysis around each curve feature:
-  - Evaluate both `left->right` and `right->left` short-line patterns.
-  - Keep a per-candidate reason tag (`ideal`, `skip_short`, `merge_short`) for later filtering.
-- Add local contour-length gating:
-  - Prefer candidates with shorter geodesic distance along contour between line endpoints.
-  - Helps reject accidental long-range line pairings when extra segments exist.
-- Use curvature intensity at the feature point in scoring:
-  - Stronger peak near curve center should score better.
+- Явно анализировать короткий сегмент с обеих сторон `curveFeature`:
+  - проверять варианты `left->right` и `right->left`;
+  - сохранять тип решения (`ideal`, `skip_short`, `merge_short`) для последующей фильтрации.
+- Добавить ограничение по длине пути вдоль контура:
+  - предпочитать пары линий с меньшей топологической дистанцией по контуру;
+  - это снижает риск случайного связывания удаленных участков.
+- Добавить вес пика кривизны в итоговый score:
+  - более выраженный пик около центра кривого участка должен повышать приоритет кандидата.
 
-## 2) Better merge policy (avoid over-merge)
+## 2) Политика merge (чтобы не сливать лишнее)
 
-- Require all merge checks simultaneously:
-  - small inter-line angle,
-  - endpoint gap threshold,
-  - continuity direction check,
-  - low refit error on merged point range.
-- Add guard against cross-wing merge:
-  - reject merges if merged span exceeds a max fraction of full contour length.
-- Use hysteresis thresholds:
-  - strict threshold for first merge,
-  - slightly relaxed only if neighboring evidence supports same console.
+- Сливать сегменты только при одновременном выполнении условий:
+  - малый угол между линиями;
+  - малый разрыв между концом/началом сегментов;
+  - корректное продолжение направления;
+  - низкая ошибка аппроксимации объединенного участка прямой.
+- Добавить защиту от «перелета» через половину крыла:
+  - запрещать merge, если объединенный участок слишком длинный относительно всего контура.
+- Использовать гистерезис порогов:
+  - строгий порог для первичного merge;
+  - немного более мягкий — только при дополнительном подтверждении соседней геометрией.
 
-## 3) Fast line-pair prefilters (without quality loss)
+## 3) Быстрые предфильтры пар линий
 
-- Filter by rough angle first (`|dAngle| <= 20 deg`) before expensive relation metrics.
-- Reject pairs with extreme length ratio early (`<0.1` or `>10`).
-- Use cheap bbox overlap or projected distance estimate to skip obviously distant pairs.
-- Cache `LineRelations_v2` outputs for repeated pair checks across nearby curve features.
+- Сначала грубо фильтровать по углу (`|dAngle| <= 20°`), затем считать более дорогие признаки.
+- Ранний отсев по отношению длин (`< 0.1` или `> 10`).
+- Ранний отсев по грубой оценке расстояния между линиями (проекции центров/середин).
+- Кэшировать результаты `LineRelations_v3` для повторных пар при близких `curveFeature`.
 
-## 4) How to prune extras when consoles > 4
+## 4) Отсечение лишних консолей при `> 4`
 
-- Cluster candidates by contour position of `curveFeature.idx` and keep best score in each cluster.
-- Enforce approximate bilateral symmetry (left/right wing consistency) at post-filter stage.
-- Rank by composite score (distance ratio, angle, side consistency, short-line penalties) and keep top-4.
-- If tie remains, prefer candidates with non-short endpoints and stronger curvature peaks.
+- Кластеризовать кандидатов по положению `curveFeature.idx` и оставлять лучший score в каждом кластере.
+- Добавить пост-фильтр симметрии для левого/правого крыла.
+- Ранжировать по объединенному score (distance ratio, угол, side relation, штрафы за short-line) и оставлять top-4.
+- При равенстве score отдавать приоритет парам с более длинными «хорошими» линиями.

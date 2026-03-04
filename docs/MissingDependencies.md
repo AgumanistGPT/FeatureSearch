@@ -1,10 +1,11 @@
-# Missing Dependencies
+﻿# Отсутствующие зависимости
 
-Current implementation of `DetectWingConsoles` has all required local dependencies in repository.
+Текущая реализация `DetectWingConsoles` работает с локальными файлами репозитория и проходит тесты без дополнительных зависимостей.
 
-No missing function/file is required for the current tests.
+Обязательных отсутствующих файлов для текущего набора тестов нет.
 
-Optional note:
-- For exact extraction of fragment merge code into a standalone reusable utility, a separate file `merge_lines.m` can be added. Current detector uses local skip/merge policy and does not require `merge_lines.m`.
+Примечание:
+- Для полного выделения фрагментной логики merge в отдельный переиспользуемый модуль можно добавить отдельный `merge_lines.m`, но для текущего контура и тестов он не обязателен.
 
-Also, the fragment expects precomputed `PeakIdxes` from an upstream stage. In this repository, curve features are derived directly from positive local curvature maxima.
+Также в исходном фрагменте используется внешний список `PeakIdxes` из верхнего уровня пайплайна.
+В этом репозитории `curveFeature` вычисляется локально из кривизны (через `findpeaks` или быструю альтернативу `FindPeakIdxesFast`).

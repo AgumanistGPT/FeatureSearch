@@ -1,0 +1,25 @@
+# MATLAB autosave and editor files
+*.asv
+*.m~
+*.mlx~
+
+# MATLAB preferences and desktop state
+*.prj
+*.autosave
+*.slxc
+*.mex*
+
+# Build artifacts
+codegen/
+slprj/
+work/
+
+# Coverage and profiler output
+coverage/
+profile_results/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

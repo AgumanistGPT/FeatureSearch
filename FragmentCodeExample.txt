@@ -1,0 +1,238 @@
+% Цикл обнаружения признаков уровень №2
+%Поиск объектов типа 'консоль'
+
+DebugRepeat = 0;
+while DebugRepeat < 2
+    DebugRepeat = DebugRepeat + 1;
+    for sIdx = 1:Seg_qnt
+        
+        [fs_prev_idx, fs_next_idx] = GetPrevNextIndexes(sIdx, Seg_qnt);    
+        segments{1,sIdx}.feature_l2.type = 'UnknownFeatureType';
+        is_there_features = segments{1,sIdx}.start_idx <= PeakIdxes & segments{1,sIdx}.end_idx >= PeakIdxes;
+
+        is_there_features = is_there_features & curvature(PeakIdxes ) > 0;
+
+        if sIdx == Seg_qnt
+            is_there_features = segments{1,sIdx}.start_idx <= PeakIdxes & ContourLength >= PeakIdxes | ...
+                segments{1,sIdx}.end_idx >= PeakIdxes;
+        end
+    
+        if  sum(is_there_features) &&...
+                strcmp(segments{1,fs_prev_idx}.type, 'line') && ...
+                strcmp(segments{1,sIdx}.type, 'curve')       &&...
+                strcmp(segments{1,fs_next_idx}.type, 'line')
+
+            [~,fs_prev_1_idx] = GetPrevNextIndexes(fs_prev_idx, Seg_qnt);
+            [~,fs_prev_2_idx] = GetPrevNextIndexes(fs_prev_1_idx, Seg_qnt);
+
+            [~,fs_next_1_idx] = GetPrevNextIndexes(fs_next_idx, Seg_qnt);
+            [~,fs_next_2_idx] = GetPrevNextIndexes(fs_next_1_idx, Seg_qnt);
+
+            AllPeaks = curvature(PeakIdxes);
+
+            AllPeaks(~is_there_features) = -inf;
+            [~, IdxWMaxVal] = max(AllPeaks);
+            is_there_features(:,:) = false;
+            is_there_features(IdxWMaxVal,1) = true;
+
+            key_point.x = contour.x(PeakIdxes(is_there_features));
+            key_point.y = contour.y(PeakIdxes(is_there_features));
+
+            [distance_bw_lines, side_relation, angle_bw_lines, length_ratio, overlay_info] =....
+                LineRelations_v2(segments{1,fs_prev_idx}, segments{1,fs_next_idx}, key_point);  
+
+            lci = 1;%line_candidate_idx
+
+            lines_relation(lci,1).distance_bw_lines   = distance_bw_lines;
+            lines_relation(lci,1).side_relation       = side_relation;
+            lines_relation(lci,1).angle_bw_lines      = angle_bw_lines;
+            lines_relation(lci,1).length_ratio        = length_ratio;
+            lines_relation(lci,1).overlay_info        = overlay_info;
+            lines_relation(lci,1).second_elemidx      = fs_next_idx;
+            lines_relation(lci,1).is_consol_part      = check_consol(angle_bw_lines_wing_threshold(1,2), lines_relation(lci,1 ));
+
+
+            lci = lci + 1;
+
+            if strcmp(segments{1,fs_next_1_idx}.type, 'line')            
+                [distance_bw_lines, side_relation, angle_bw_lines, length_ratio, overlay_info] =....
+                    LineRelations_v2(segments{1,fs_prev_idx}, segments{1,fs_next_1_idx}, key_point);
+
+                lines_relation(lci,1).distance_bw_lines   = distance_bw_lines;
+                lines_relation(lci,1).side_relation       = side_relation;
+                lines_relation(lci,1).angle_bw_lines      = angle_bw_lines;
+                lines_relation(lci,1).length_ratio        = length_ratio;
+                lines_relation(lci,1).overlay_info        = overlay_info;
+                lines_relation(lci,1).second_elemidx      = fs_next_1_idx;                
+                lines_relation(lci,1).is_consol_part      = check_consol(angle_bw_lines_wing_threshold(1,2), lines_relation(lci,1 ));
+                lci = lci + 1;
+            end
+
+            if strcmp(segments{1,fs_next_2_idx}.type, 'line')
+                [distance_bw_lines, side_relation, angle_bw_lines, length_ratio, overlay_info] =....
+                    LineRelations_v2(segments{1,fs_prev_idx}, segments{1,fs_next_2_idx}, key_point);
+
+                lines_relation(lci,1).distance_bw_lines   = distance_bw_lines;
+                lines_relation(lci,1).side_relation       = side_relation;
+                lines_relation(lci,1).angle_bw_lines      = angle_bw_lines;
+                lines_relation(lci,1).length_ratio        = length_ratio;
+                lines_relation(lci,1).overlay_info        = overlay_info;
+                lines_relation(lci,1).second_elemidx      = fs_next_2_idx;                                
+                lines_relation(lci,1).is_consol_part      = check_consol(angle_bw_lines_wing_threshold(1,2), lines_relation(lci,1 ));
+            end
+
+            valid_rows = find([lines_relation(:,1).is_consol_part]);
+
+            % lengths = arrayfun(@(i) ...
+            %     segments{1, lines_relation(i,1).second_elemidx}.params.line_metrics.segment_length, valid_rows);
+            % [~, k] = max(lengths);
+            % max_idx = valid_rows(k);
+
+%Обнаружение признаков уровень 2 тип "Консоль"
+
+                if blEnableVis
+                    hold on;
+                    plot(segments{1,sIdx}.points_x,segments{1,sIdx}.points_y,'-r', 'LineWidth', 2);
+                end
+
+            %if angle_bw_lines                <= angle_bw_lines_wing_threshold(1,2) &&... % Максимальный угол между прямыми для консоли, берем по максимальному значению для крыла
+            %   sign(side_relation(1,1))      == sign(side_relation(1,2)) &&... % обе линии с одной стороны от feature
+            %   distance_bw_lines/max_section <  0.3
+
+            if any(valid_rows)
+
+                twolines_relation = lines_relation(valid_rows(1),1);
+
+                max_section = max( segments{1,fs_prev_idx}.params.line_metrics.segment_length,...
+                                   segments{1,twolines_relation.second_elemidx}.params.line_metrics.segment_length);
+
+
+                distance_bw_lines = twolines_relation.distance_bw_lines;
+                distance_sectionlength_ratio = distance_bw_lines/max_section;
+              if  distance_sectionlength_ratio <  0.3 && distance_sectionlength_ratio > 0.02
+                  
+                  ConsolCounter = ConsolCounter + 1;
+
+                  segments{1,sIdx}.feature_l1.idx = PeakIdxes(is_there_features);
+                  segments{1,sIdx}.feature_l2.type = 'Consol';
+                  segments{1,sIdx}.feature_l2.param.side_relation = twolines_relation.side_relation;
+                  segments{1,sIdx}.feature_l2.param.distance_bw_lines = twolines_relation.distance_bw_lines;
+                  segments{1,sIdx}.feature_l2.param.angle_bw_lines = twolines_relation.angle_bw_lines;
+                  segments{1,sIdx}.feature_l2.param.length_ratio = twolines_relation.length_ratio;
+                  segments{1,sIdx}.feature_l2.param.overlay = twolines_relation.overlay_info;
+                  %segments{1,sIdx}.feature_l2.param.Indexes.ConsolFace = sIdx;
+                  %segments{1,sIdx}.feature_l2.param.Indexes.ConsoleLongSide = [fs_prev_idx, fs_next_idx];
+                  segments{1,sIdx}.feature_l2.param.SegIndexes = [fs_prev_idx, sIdx, twolines_relation.second_elemidx];
+              end
+            end
+
+         end
+    end
+
+    if ConsolCounter < 4
+        if ~blDebugMode
+            return;
+        end
+        disp('Not enough consoles found!');
+        figure(12);plot(contour.x,contour.y,'-g');set(gca, 'YDir', 'reverse');axis equal;
+        hold on;
+        blEnableVis = true;
+    else
+        break;
+    end
+end
+
+
+
+
+Пример merge
+function merged_segments = merge_lines(segments, contour, angle_bw_lines_threshold, dist_bw_lines_threshold, avg_dist_threshold, max_point_dist)
+    % Функция для объединения линий через промежуточные сегменты
+    
+    % Создаем копию segments для работы
+    merged_segments = segments;
+    n = length(merged_segments);
+    
+    % Флаг для продолжения объединения
+    continue_merging = true;
+    
+    while continue_merging && n > 1
+        continue_merging = false;
+        i = 1;
+        
+        while i <= n-1
+            % Ищем первую линию
+            if strcmp(merged_segments{i}.type, 'line')
+                
+                % Ищем следующую линию после промежуточных сегментов
+                j = i + 1;
+                found_next_line = false;
+                intermediate_segments = {};
+                
+                while j <= n && ~found_next_line
+                    if strcmp(merged_segments{j}.type, 'line')
+                        found_next_line = true;
+                    else
+                        % Сохраняем промежуточные сегменты
+                        intermediate_segments{end+1} = merged_segments{j};
+                        j = j + 1;
+                    end
+                end
+                
+                if found_next_line
+                    line1 = merged_segments{i};
+                    line2 = merged_segments{j};
+                    
+                    % Вычисляем углы наклона линий
+
+                    angle_diff = angle_bw_2lines(line1.params.a, line2.params.a);
+
+                    % Вычисляем расстояние между концом первой линии и началом второй
+                    end_point1 = [line1.points_x(end), line1.points_y(end)];
+                    start_point2 = [line2.points_x(1), line2.points_y(1)];
+                    dist = norm(end_point1 - start_point2);
+                    
+                    %phis_length = sum(sqrt(diff(line.x(1:2)).^2 + diff(line.y(1:2)).^2));
+                    
+                    % Проверяем, что второй отрезок продолжает первый (не движется в обратном направлении)
+                    is_continuing = check_continuation_direction(line1, line2);
+                    xy_range = line1.start_idx:line2.end_idx;
+
+                    % Проверяем критерии объединения
+                    if angle_diff <= angle_bw_lines_threshold && ...
+                       dist <= dist_bw_lines_threshold && ...
+                       is_continuing
+                    
+                        %[a, b, avg_distance, straightness_metric, distances, max_distance] = fit_line(contour.x(xy_range,1), contour.y(xy_range,1), max_point_dist);
+                        [~,line_metrics] = fit_line_parametric(contour.x(xy_range,1), contour.y(xy_range,1));
+
+                        avg_distance = line_metrics.avg_distance;
+
+                        if avg_distance < avg_dist_threshold
+                            % Объединяем линии с промежуточными сегментами
+                            merged_line = merge_line_with_intermediates(line1, line2, intermediate_segments);
+
+                            % Заменяем первую линию объединенной
+                            merged_segments{i} = merged_line;
+
+                            % Удаляем все сегменты от i+1 до j
+                            merged_segments(i+1:j) = [];
+
+                            % Обновляем счетчики
+                            n = length(merged_segments);
+                            continue_merging = true;
+                        else
+                            i = i + 1;
+                        end
+                    else
+                        i = i + 1;
+                    end
+                else
+                    i = i + 1;
+                end
+            else
+                i = i + 1;
+            end
+        end
+    end
+end

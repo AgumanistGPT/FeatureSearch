@@ -352,14 +352,18 @@ for li = 1:numel(leftCandidates)
 
         distanceRatio = distanceBwLines / maxSection;
         sideMatch = sign(sideRelation(1)) == sign(sideRelation(2)) && sign(sideRelation(1)) ~= 0;
+        linesRelation = struct('angle_bw_lines', angleBwLines, 'side_relation', sideRelation);
 
-        if angleBwLines > params.consoleAngleThresholdDeg
+        if exist('check_consol', 'file') == 2
+            isConsolPair = check_consol(params.consoleAngleThresholdDeg, linesRelation);
+        else
+            isConsolPair = angleBwLines <= params.consoleAngleThresholdDeg && sideMatch;
+        end
+
+        if ~isConsolPair || ~sideMatch
             continue;
         end
         if distanceRatio < params.minDistanceRatio || distanceRatio > params.maxDistanceRatio
-            continue;
-        end
-        if ~sideMatch
             continue;
         end
         if lengthRatio < params.lengthRatioMin || lengthRatio > params.lengthRatioMax

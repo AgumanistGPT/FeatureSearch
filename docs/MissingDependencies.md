@@ -1,14 +1,10 @@
-﻿# Missing Dependencies
+# Missing Dependencies
 
-Current implementation of `DetectWingConsoles` is self-contained and does not call missing files.
+Current implementation of `DetectWingConsoles` has all required local dependencies in repository.
 
-For a full 1:1 reproduction of all fragment utilities, the following are absent in this repository:
+No missing function/file is required for the current tests.
 
-- Нужна функция/файл `check_consol` (нет в проекте). Пользователь добавит её в папку.
-- Нужна функция/файл `GetPrevNextIndexes` (нет в проекте). Пользователь добавит её в папку.
-- Нужна функция/файл `angle_bw_2lines` (нет в проекте). Пользователь добавит её в папку.
-- Нужна функция/файл `check_continuation_direction` (нет в проекте). Пользователь добавит её в папку.
-- Нужна функция/файл `fit_line_parametric` (нет в проекте). Пользователь добавит её в папку.
-- Нужна функция/файл `merge_line_with_intermediates` (нет в проекте). Пользователь добавит её в папку.
+Optional note:
+- For exact extraction of fragment merge code into a standalone reusable utility, a separate file `merge_lines.m` can be added. Current detector uses local skip/merge policy and does not require `merge_lines.m`.
 
 Also, the fragment expects precomputed `PeakIdxes` from an upstream stage. In this repository, curve features are derived directly from positive local curvature maxima.

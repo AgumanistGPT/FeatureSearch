@@ -13,7 +13,7 @@ end
 function testBaselineRealData(testCase)
 S = load(fullfile(testCase.TestData.repoRoot, 'data', 'RealData.mat'));
 consoles = DetectWingConsoles(S.segments, S.contour, S.curvature, S.tangent_angles);
-verifyGreaterThanOrEqual(testCase, numel(consoles), 4);
+verifyEqual(testCase, numel(consoles), 4);
 end
 
 function testRandomLinePermutations(testCase)
@@ -36,6 +36,6 @@ for k = 1:nRandomPermutations
     shuffledSegments(lineIdx) = S.segments(permutedLineOrder);
 
     consoles = DetectWingConsoles(shuffledSegments, S.contour, S.curvature, S.tangent_angles);
-    verifyGreaterThanOrEqual(testCase, numel(consoles), 4, sprintf('Permutation #%d failed', k));
+    verifyEqual(testCase, numel(consoles), 4, sprintf('Permutation #%d failed', k));
 end
 end

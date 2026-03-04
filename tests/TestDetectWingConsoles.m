@@ -19,15 +19,20 @@ end
 function testRandomLinePermutations(testCase)
 S = load(fullfile(testCase.TestData.repoRoot, 'data', 'RealData.mat'));
 lineIdx = find(cellfun(@(s) strcmp(s.type, 'line'), S.segments));
+nLines = numel(lineIdx);
+nRandomPermutations = 100;
+totalPossiblePermutations = exp(gammaln(double(nLines) + 1)); % nLines!
 
-if numel(lineIdx) < 2
+if nLines < 2
     verifyFail(testCase, 'Not enough line segments for permutation test.');
 end
+verifyGreaterThanOrEqual(testCase, totalPossiblePermutations, nRandomPermutations, ...
+    'Requested random permutation count exceeds total possible permutations.');
 
 rng(42);
-for k = 1:30
+for k = 1:nRandomPermutations
     shuffledSegments = S.segments;
-    permutedLineOrder = lineIdx(randperm(numel(lineIdx)));
+    permutedLineOrder = lineIdx(randperm(nLines));
     shuffledSegments(lineIdx) = S.segments(permutedLineOrder);
 
     consoles = DetectWingConsoles(shuffledSegments, S.contour, S.curvature, S.tangent_angles);

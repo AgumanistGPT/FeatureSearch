@@ -1,222 +1,289 @@
 function consoles = DetectWingConsoles(segments, contour, curvature, tangent_angles)
-%DETECTWINGCONSOLES Detect wing consoles as line-curveFeature-line triplets.
-%   consoles = DetectWingConsoles(segments, contour, curvature, tangent_angles)
-%   returns a struct array with fields:
-%     - lineA_idx
-%     - lineB_idx
-%     - curveFeature (struct with idx, curve_idx, x, y)
-%
-%   The detector is order-independent for input `segments`: topology is
-%   reconstructed from contour indexes.
+%DETECTWINGCONSOLES Fast detection of wing consoles as line-curve-line triplets.
 
-% Keep signature compatibility with existing pipeline.
 if nargin < 4
     error('DetectWingConsoles requires 4 inputs: segments, contour, curvature, tangent_angles.');
 end
-
-% tangent_angles is intentionally accepted by API but not required here.
+% Signature compatibility.
 %#ok<NASGU>
 
-consoles = emptyConsoles();
+consoles = repmat(struct('lineA_idx', [], 'lineB_idx', [], ...
+    'curveFeature', struct('idx', [], 'curve_idx', [], 'x', [], 'y', [])), 0, 1);
 
 if isempty(segments) || isempty(curvature) || ~isstruct(contour)
     return;
 end
 
-if exist('LineRelations_v2', 'file') ~= 2
-    error('Need function/file LineRelations_v2 (not in project). User will add it to the folder.');
-end
-
-contourLen = numel(curvature);
-if contourLen < 3
+nContour = numel(curvature);
+if nContour < 3
     return;
 end
 
-[sortedSegments, sortedToOriginal] = sortSegmentsByTopology(segments, contourLen);
-maxLineLength = getMaxLineLength(sortedSegments);
-if maxLineLength <= 0
+nSeg = numel(segments);
+if nSeg == 0
     return;
 end
 
-params = getDefaultParams(maxLineLength);
-peakIdx = findPositiveCurvaturePeaks(curvature);
+% Rebuild contour topology (order-independent input).
+startIdx = zeros(nSeg, 1);
+for i = 1:nSeg
+    startIdx(i) = normalizeIndex(segments{i}.start_idx, nContour);
+end
+[~, order] = sortrows([startIdx, (1:nSeg)'], [1, 2]);
+sortedSeg = segments(order);
+sortedToOrig = order;
+
+% Precompute per-segment geometry for speed.
+isLine = false(nSeg, 1);
+isCurve = false(nSeg, 1);
+lineLen = zeros(nSeg, 1);
+lineDir = zeros(nSeg, 2);
+lineStart = zeros(nSeg, 2);
+lineCenter = zeros(nSeg, 2);
+
+for i = 1:nSeg
+    seg = sortedSeg{i};
+    t = seg.type;
+    if strcmp(t, 'line')
+        isLine(i) = true;
+        [lineLen(i), lineDir(i, :), lineStart(i, :), lineCenter(i, :)] = extractLineGeom(seg);
+    elseif strcmp(t, 'curve')
+        isCurve(i) = true;
+    end
+end
+
+maxLineLen = max(lineLen);
+if maxLineLen <= 0
+    return;
+end
+
+params = struct();
+params.shortLineLen = 0.16 * maxLineLen;
+params.skipAngleDeg = 25;
+params.mergeAngleDeg = 12;
+params.consoleAngleDeg = 12;
+params.minDistRatio = 0.02;
+params.maxDistRatio = 0.30;
+params.targetDistRatio = 0.10;
+params.minLengthRatio = 0.15;
+params.maxLengthRatio = 7.0;
+
+shortLine = isLine & (lineLen <= params.shortLineLen);
+peakIdx = findPeakIdxesFast(curvature);
 if isempty(peakIdx)
     return;
 end
 
-for curvePos = 1:numel(sortedSegments)
-    curveSeg = sortedSegments{curvePos};
-    if ~isCurveSegment(curveSeg)
+curvePos = find(isCurve);
+maxOut = numel(curvePos);
+outA = zeros(maxOut, 1);
+outB = zeros(maxOut, 1);
+outCurvePos = zeros(maxOut, 1);
+outFeature = zeros(maxOut, 1);
+outCount = 0;
+
+for k = 1:maxOut
+    cPos = curvePos(k);
+    cSeg = sortedSeg{cPos};
+
+    fIdx = selectCurveFeatureIdx(cSeg, peakIdx, curvature, nContour);
+    if fIdx == 0
         continue;
     end
 
-    featureIdx = selectCurveFeaturePoint(curveSeg, peakIdx, curvature, contourLen);
-    if isempty(featureIdx)
+    [l1, l2] = findNearestLines(isLine, cPos, -1);
+    [r1, r2] = findNearestLines(isLine, cPos, +1);
+    if l1 == 0 || r1 == 0
         continue;
     end
 
-    curveFeature = struct( ...
-        'idx', featureIdx, ...
-        'curve_idx', sortedToOriginal(curvePos), ...
-        'x', contour.x(featureIdx), ...
-        'y', contour.y(featureIdx));
+    leftPos = l1;
+    rightPos = r1;
 
-    [leftCandidates, rightCandidates] = collectLineCandidates( ...
-        sortedSegments, sortedToOriginal, curvePos, params);
+    % Short-line policy around curve: skip or merge-prefer.
+    if shortLine(rightPos) && r2 > 0
+        a = angleDiffDeg(lineDir(leftPos, :), lineDir(rightPos, :));
+        if a >= params.skipAngleDeg || a <= params.mergeAngleDeg
+            rightPos = r2;
+        end
+    end
+    if shortLine(leftPos) && l2 > 0
+        a = angleDiffDeg(lineDir(leftPos, :), lineDir(rightPos, :));
+        if a >= params.skipAngleDeg || a <= params.mergeAngleDeg
+            leftPos = l2;
+        end
+    end
 
-    if isempty(leftCandidates) || isempty(rightCandidates)
+    leftOptions = uniqueNonZero([leftPos, l1, l2]);
+    rightOptions = uniqueNonZero([rightPos, r1, r2]);
+    if isempty(leftOptions) || isempty(rightOptions)
         continue;
     end
 
-    bestPair = pickBestConsolePair(leftCandidates, rightCandidates, curveFeature, params);
-    if isempty(bestPair)
+    kp = [contour.x(fIdx), contour.y(fIdx)];
+    bestScore = inf;
+    bestL = 0;
+    bestR = 0;
+
+    for li = 1:numel(leftOptions)
+        pL = leftOptions(li);
+        for ri = 1:numel(rightOptions)
+            pR = rightOptions(ri);
+            if pL == pR
+                continue;
+            end
+
+            [ok, score] = evalPairFast(pL, pR, kp, lineLen, lineDir, lineStart, lineCenter, params);
+            if ok && score < bestScore
+                bestScore = score;
+                bestL = pL;
+                bestR = pR;
+            end
+        end
+    end
+
+    if bestL == 0 || bestR == 0
         continue;
     end
 
-    consoles(end + 1, 1).lineA_idx = bestPair.lineA_idx; %#ok<AGROW>
-    consoles(end, 1).lineB_idx = bestPair.lineB_idx;
-    consoles(end, 1).curveFeature = curveFeature;
+    outCount = outCount + 1;
+    outA(outCount) = sortedToOrig(bestL);
+    outB(outCount) = sortedToOrig(bestR);
+    outCurvePos(outCount) = cPos;
+    outFeature(outCount) = fIdx;
 end
 
-consoles = uniqueConsoles(consoles);
-
-end
-
-function consoles = emptyConsoles()
-consoles = repmat(struct( ...
-    'lineA_idx', [], ...
-    'lineB_idx', [], ...
-    'curveFeature', struct('idx', [], 'curve_idx', [], 'x', [], 'y', [])), 0, 1);
-end
-
-function params = getDefaultParams(maxLineLength)
-params = struct();
-params.maxLineLength = maxLineLength;
-params.shortLineRatio = 0.16;
-params.skipAngleThresholdDeg = 25;
-params.mergeAngleThresholdDeg = 12;
-params.consoleAngleThresholdDeg = 12;
-params.minDistanceRatio = 0.02;
-params.maxDistanceRatio = 0.30;
-params.targetDistanceRatio = 0.10;
-params.maxCandidatesPerSide = 3;
-params.lengthRatioMin = 0.15;
-params.lengthRatioMax = 7.0;
-end
-
-function [sortedSegments, sortedToOriginal] = sortSegmentsByTopology(segments, contourLen)
-n = numel(segments);
-anchor = zeros(n, 1);
-for i = 1:n
-    anchor(i) = normalizeIndex(segments{i}.start_idx, contourLen);
-end
-
-sortMatrix = [anchor, (1:n)'];
-[~, order] = sortrows(sortMatrix, [1, 2]);
-sortedSegments = segments(order);
-sortedToOriginal = order;
-end
-
-function idx = normalizeIndex(idx, contourLen)
-idx = mod(double(idx) - 1, contourLen) + 1;
-end
-
-function maxLen = getMaxLineLength(segments)
-maxLen = 0;
-for i = 1:numel(segments)
-    if ~isLineSegment(segments{i})
-        continue;
-    end
-    segLen = getLineLength(segments{i});
-    if segLen > maxLen
-        maxLen = segLen;
-    end
-end
-end
-
-function tf = isLineSegment(segment)
-tf = isfield(segment, 'type') && strcmp(segment.type, 'line');
-end
-
-function tf = isCurveSegment(segment)
-tf = isfield(segment, 'type') && strcmp(segment.type, 'curve');
-end
-
-function segLen = getLineLength(segment)
-segLen = 0;
-if isfield(segment, 'params') && isfield(segment.params, 'line_metrics') && ...
-        isfield(segment.params.line_metrics, 'segment_length')
-    segLen = double(segment.params.line_metrics.segment_length);
+if outCount == 0
     return;
 end
 
-if isfield(segment, 'points_x') && isfield(segment, 'points_y')
-    dx = diff(double(segment.points_x(:)));
-    dy = diff(double(segment.points_y(:)));
-    segLen = sum(hypot(dx, dy));
-end
+keys = [min(outA(1:outCount), outB(1:outCount)), ...
+        max(outA(1:outCount), outB(1:outCount)), ...
+        outFeature(1:outCount)];
+[~, keep] = unique(keys, 'rows', 'stable');
+
+m = numel(keep);
+consoles = repmat(struct('lineA_idx', 0, 'lineB_idx', 0, ...
+    'curveFeature', struct('idx', 0, 'curve_idx', 0, 'x', 0, 'y', 0)), m, 1);
+
+for i = 1:m
+    src = keep(i);
+    fIdx = outFeature(src);
+    cPos = outCurvePos(src);
+
+    consoles(i).lineA_idx = outA(src);
+    consoles(i).lineB_idx = outB(src);
+    consoles(i).curveFeature = struct( ...
+        'idx', fIdx, ...
+        'curve_idx', sortedToOrig(cPos), ...
+        'x', contour.x(fIdx), ...
+        'y', contour.y(fIdx));
 end
 
-function peakIdx = findPositiveCurvaturePeaks(curvature)
+end
+
+function idx = normalizeIndex(idx, n)
+idx = mod(double(idx) - 1, n) + 1;
+end
+
+function [len, dirVec, startPt, centerPt] = extractLineGeom(seg)
+len = 0;
+dirVec = [1, 0];
+startPt = [seg.points_x(1), seg.points_y(1)];
+endPt = [seg.points_x(end), seg.points_y(end)];
+
+if isfield(seg, 'params') && isfield(seg.params, 'line_metrics') && ...
+        isfield(seg.params.line_metrics, 'segment_length')
+    len = double(seg.params.line_metrics.segment_length);
+else
+    dx = diff(double(seg.points_x(:)));
+    dy = diff(double(seg.points_y(:)));
+    len = sum(hypot(dx, dy));
+end
+
+if isfield(seg, 'params') && isfield(seg.params, 'line_data')
+    ld = seg.params.line_data;
+    if isfield(ld, 'direction_vector')
+        d = double(ld.direction_vector(:))';
+        nrm = hypot(d(1), d(2));
+        if nrm > 0
+            dirVec = d / nrm;
+        end
+    end
+    if isfield(ld, 'start_point')
+        startPt = double(ld.start_point(:))';
+    end
+    if isfield(ld, 'end_point')
+        endPt = double(ld.end_point(:))';
+    end
+else
+    d = endPt - startPt;
+    nrm = hypot(d(1), d(2));
+    if nrm > 0
+        dirVec = d / nrm;
+    end
+end
+
+centerPt = 0.5 * (startPt + endPt);
+end
+
+function peakIdx = findPeakIdxesFast(curvature)
 curv = double(curvature(:));
 n = numel(curv);
 if n < 3
-    peakIdx = [];
+    peakIdx = zeros(0, 1);
     return;
 end
 
-prev = curv([n; (1:n-1)']);
-next = curv([(2:n)'; 1]);
-peakIdx = find(curv > 0 & curv >= prev & curv >= next);
+overlap = min(20, max(1, floor(n / 4)));
+peakThreshold = 0.05;
+extCurv = [curv(end-overlap+1:end); curv; curv(1:overlap)];
+
+mid = extCurv(2:end-1);
+prev = extCurv(1:end-2);
+next = extCurv(3:end);
+
+peakPos = find(mid >= prev & mid >= next & mid >= peakThreshold) + 1;
+peakNeg = find(mid <= prev & mid <= next & (-mid) >= peakThreshold) + 1;
+
+allPeaks = sort([peakPos(:); peakNeg(:)], 'ascend') - overlap;
+allPeaks = allPeaks(allPeaks > 0 & allPeaks <= n);
+peakIdx = unique(allPeaks, 'stable');
 end
 
-function featureIdx = selectCurveFeaturePoint(curveSeg, peakIdx, curvature, contourLen)
-st = normalizeIndex(curveSeg.start_idx, contourLen);
-en = normalizeIndex(curveSeg.end_idx, contourLen);
+function fIdx = selectCurveFeatureIdx(curveSeg, peakIdx, curvature, nContour)
+st = normalizeIndex(curveSeg.start_idx, nContour);
+en = normalizeIndex(curveSeg.end_idx, nContour);
 
-inMask = false(size(peakIdx));
-for i = 1:numel(peakIdx)
-    inMask(i) = indexInCircularRange(peakIdx(i), st, en);
-end
-
-if ~any(inMask)
-    featureIdx = [];
-    return;
-end
-
-localPeaks = peakIdx(inMask);
-[~, bestLocal] = max(curvature(localPeaks));
-featureIdx = localPeaks(bestLocal);
-end
-
-function tf = indexInCircularRange(idx, st, en)
 if st <= en
-    tf = idx >= st && idx <= en;
+    mask = peakIdx >= st & peakIdx <= en;
 else
-    tf = idx >= st || idx <= en;
-end
+    mask = peakIdx >= st | peakIdx <= en;
 end
 
-function [leftCandidates, rightCandidates] = collectLineCandidates(sortedSegments, sortedToOriginal, curvePos, params)
-leftCandidates = collectDirectionalLines(sortedSegments, sortedToOriginal, curvePos, -1, params);
-rightCandidates = collectDirectionalLines(sortedSegments, sortedToOriginal, curvePos, +1, params);
-
-if isempty(leftCandidates) || isempty(rightCandidates)
+if ~any(mask)
+    fIdx = 0;
     return;
 end
 
-[leftCandidates, rightCandidates] = applyShortLinePolicy(leftCandidates, rightCandidates, params);
-leftCandidates = keepUniqueByOriginalIndex(leftCandidates, params.maxCandidatesPerSide);
-rightCandidates = keepUniqueByOriginalIndex(rightCandidates, params.maxCandidatesPerSide);
+localPeaks = peakIdx(mask);
+localPeaks = localPeaks(curvature(localPeaks) > 0);
+if isempty(localPeaks)
+    fIdx = 0;
+    return;
 end
 
-function candidates = collectDirectionalLines(sortedSegments, sortedToOriginal, startPos, direction, params)
-n = numel(sortedSegments);
-candidates = struct('orig_idx', {}, 'sorted_pos', {}, 'segment', {}, 'is_short', {});
+[~, k] = max(curvature(localPeaks));
+fIdx = localPeaks(k);
+end
 
-pos = startPos;
-visited = 0;
-while visited < n - 1 && numel(candidates) < params.maxCandidatesPerSide
+function [near1, near2] = findNearestLines(isLine, pos0, direction)
+n = numel(isLine);
+near1 = 0;
+near2 = 0;
+count = 0;
+pos = pos0;
+for i = 1:n-1
     pos = pos + direction;
     if pos < 1
         pos = n;
@@ -224,180 +291,77 @@ while visited < n - 1 && numel(candidates) < params.maxCandidatesPerSide
         pos = 1;
     end
 
-    visited = visited + 1;
-    seg = sortedSegments{pos};
-    if ~isLineSegment(seg)
-        continue;
-    end
-
-    isShort = getLineLength(seg) <= params.shortLineRatio * params.maxLineLength;
-    candidates(end + 1) = struct( ...
-        'orig_idx', sortedToOriginal(pos), ...
-        'sorted_pos', pos, ...
-        'segment', seg, ...
-        'is_short', isShort); %#ok<AGROW>
-end
-end
-
-function [leftCandidates, rightCandidates] = applyShortLinePolicy(leftCandidates, rightCandidates, params)
-if isempty(leftCandidates) || isempty(rightCandidates)
-    return;
-end
-
-leftMain = leftCandidates(1);
-rightMain = rightCandidates(1);
-
-if rightMain.is_short && numel(rightCandidates) >= 2
-    angleWithLeft = lineAngleDiffDeg(leftMain.segment, rightMain.segment);
-    if angleWithLeft >= params.skipAngleThresholdDeg
-        % Case (A): good line - curve - short line with big angle -> skip.
-        rightCandidates = rightCandidates(2:end);
-    elseif angleWithLeft <= params.mergeAngleThresholdDeg
-        % Case (B): short line continues good line -> prefer merged continuation.
-        rightCandidates = [rightCandidates(2), rightCandidates];
-    end
-end
-
-if isempty(rightCandidates)
-    return;
-end
-
-rightMain = rightCandidates(1);
-if leftMain.is_short && numel(leftCandidates) >= 2
-    angleWithRight = lineAngleDiffDeg(leftMain.segment, rightMain.segment);
-    if angleWithRight >= params.skipAngleThresholdDeg
-        leftCandidates = leftCandidates(2:end);
-    elseif angleWithRight <= params.mergeAngleThresholdDeg
-        leftCandidates = [leftCandidates(2), leftCandidates];
-    end
-end
-end
-
-function diffDeg = lineAngleDiffDeg(lineA, lineB)
-angleA = readLineAngleDeg(lineA);
-angleB = readLineAngleDeg(lineB);
-rawDiff = abs(angleA - angleB);
-rawDiff = mod(rawDiff, 180);
-if rawDiff > 90
-    rawDiff = 180 - rawDiff;
-end
-diffDeg = rawDiff;
-end
-
-function angleDeg = readLineAngleDeg(lineSegment)
-if isfield(lineSegment, 'params') && isfield(lineSegment.params, 'line_data') && ...
-        isfield(lineSegment.params.line_data, 'angle_deg')
-    angleDeg = double(lineSegment.params.line_data.angle_deg);
-    return;
-end
-
-if isfield(lineSegment, 'params') && isfield(lineSegment.params, 'a')
-    angleDeg = atan(double(lineSegment.params.a)) * 180 / pi;
-    return;
-end
-
-angleDeg = 0;
-end
-
-function uniqueCandidates = keepUniqueByOriginalIndex(candidates, maxCount)
-if isempty(candidates)
-    uniqueCandidates = candidates;
-    return;
-end
-
-used = [];
-uniqueCandidates = struct('orig_idx', {}, 'sorted_pos', {}, 'segment', {}, 'is_short', {});
-for i = 1:numel(candidates)
-    idx = candidates(i).orig_idx;
-    if any(used == idx)
-        continue;
-    end
-
-    uniqueCandidates(end + 1) = candidates(i); %#ok<AGROW>
-    used(end + 1) = idx; %#ok<AGROW>
-    if numel(uniqueCandidates) >= maxCount
-        break;
-    end
-end
-end
-
-function bestPair = pickBestConsolePair(leftCandidates, rightCandidates, curveFeature, params)
-bestPair = [];
-keyPoint = struct('x', curveFeature.x, 'y', curveFeature.y);
-
-for li = 1:numel(leftCandidates)
-    for ri = 1:numel(rightCandidates)
-        left = leftCandidates(li);
-        right = rightCandidates(ri);
-
-        if left.orig_idx == right.orig_idx
-            continue;
-        end
-
-        try
-            [distanceBwLines, sideRelation, angleBwLines, lengthRatio] = ...
-                LineRelations_v2(left.segment, right.segment, keyPoint);
-        catch
-            continue;
-        end
-
-        if ~isfinite(distanceBwLines) || ~isfinite(angleBwLines) || ~isfinite(lengthRatio)
-            continue;
-        end
-
-        maxSection = max(getLineLength(left.segment), getLineLength(right.segment));
-        if maxSection <= 0
-            continue;
-        end
-
-        distanceRatio = distanceBwLines / maxSection;
-        sideMatch = sign(sideRelation(1)) == sign(sideRelation(2)) && sign(sideRelation(1)) ~= 0;
-        linesRelation = struct('angle_bw_lines', angleBwLines, 'side_relation', sideRelation);
-
-        if exist('check_consol', 'file') == 2
-            isConsolPair = check_consol(params.consoleAngleThresholdDeg, linesRelation);
-        else
-            isConsolPair = angleBwLines <= params.consoleAngleThresholdDeg && sideMatch;
-        end
-
-        if ~isConsolPair || ~sideMatch
-            continue;
-        end
-        if distanceRatio < params.minDistanceRatio || distanceRatio > params.maxDistanceRatio
-            continue;
-        end
-        if lengthRatio < params.lengthRatioMin || lengthRatio > params.lengthRatioMax
-            continue;
-        end
-
-        shortPenalty = 0.08 * (double(left.is_short) + double(right.is_short));
-        score = abs(distanceRatio - params.targetDistanceRatio) + ...
-            0.02 * angleBwLines + ...
-            0.10 * abs(log(max(lengthRatio, eps))) + ...
-            shortPenalty;
-
-        if isempty(bestPair) || score < bestPair.score
-            bestPair = struct( ...
-                'lineA_idx', left.orig_idx, ...
-                'lineB_idx', right.orig_idx, ...
-                'score', score);
+    if isLine(pos)
+        count = count + 1;
+        if count == 1
+            near1 = pos;
+        elseif count == 2
+            near2 = pos;
+            return;
         end
     end
 end
 end
 
-function consoles = uniqueConsoles(consoles)
-if isempty(consoles)
+function vals = uniqueNonZero(vals)
+vals = vals(vals > 0);
+if isempty(vals)
+    return;
+end
+vals = unique(vals, 'stable');
+end
+
+function d = angleDiffDeg(v1, v2)
+c = abs(v1(1) * v2(1) + v1(2) * v2(2));
+if c > 1
+    c = 1;
+end
+d = acosd(c);
+end
+
+function [ok, score] = evalPairFast(pL, pR, kp, lineLen, lineDir, lineStart, lineCenter, params)
+ok = false;
+score = inf;
+
+lenL = lineLen(pL);
+lenR = lineLen(pR);
+if lenL <= 0 || lenR <= 0
     return;
 end
 
-keys = zeros(numel(consoles), 3);
-for i = 1:numel(consoles)
-    a = consoles(i).lineA_idx;
-    b = consoles(i).lineB_idx;
-    keys(i, :) = [min(a, b), max(a, b), consoles(i).curveFeature.idx];
+vL = lineDir(pL, :);
+vR = lineDir(pR, :);
+
+ang = angleDiffDeg(vL, vR);
+if ang > params.consoleAngleDeg
+    return;
 end
 
-[~, keep] = unique(keys, 'rows', 'stable');
-consoles = consoles(keep);
+vecKL = kp - lineStart(pL, :);
+vecKR = kp - lineStart(pR, :);
+sideL = sign(vL(1) * vecKL(2) - vL(2) * vecKL(1));
+sideR = sign(vR(1) * vecKR(2) - vR(2) * vecKR(1));
+if sideL == 0 || sideR == 0 || sideL ~= sideR
+    return;
+end
+
+vecLC = lineCenter(pL, :) - lineStart(pR, :);
+vecRC = lineCenter(pR, :) - lineStart(pL, :);
+distLtoR = abs(vR(1) * vecLC(2) - vR(2) * vecLC(1));
+distRtoL = abs(vL(1) * vecRC(2) - vL(2) * vecRC(1));
+distance = 0.5 * (distLtoR + distRtoL);
+
+maxLen = max(lenL, lenR);
+distRatio = distance / maxLen;
+if distRatio < params.minDistRatio || distRatio > params.maxDistRatio
+    return;
+end
+
+lenRatio = lenL / lenR;
+if lenRatio < params.minLengthRatio || lenRatio > params.maxLengthRatio
+    return;
+end
+
+ok = true;
+score = abs(distRatio - params.targetDistRatio) + 0.03 * ang + 0.10 * abs(log(max(lenRatio, eps)));
 end

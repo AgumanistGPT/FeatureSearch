@@ -67,10 +67,6 @@ params.maxDistRatio = 0.30;
 params.targetDistRatio = 0.10;
 params.minLengthRatio = 0.15;
 params.maxLengthRatio = 7.0;
-contourSpan = max([max(contour.x) - min(contour.x), max(contour.y) - min(contour.y)]);
-if contourSpan <= 0
-    contourSpan = 1;
-end
 
 shortLine = isLine & (lineLen <= params.shortLineLen);
 peakIdx = findPeakIdxesFast(curvature);
@@ -84,7 +80,6 @@ outA = zeros(maxOut, 1);
 outB = zeros(maxOut, 1);
 outCurvePos = zeros(maxOut, 1);
 outFeature = zeros(maxOut, 1);
-outScore = inf(maxOut, 1);
 outCount = 0;
 
 for k = 1:maxOut
@@ -102,25 +97,25 @@ for k = 1:maxOut
         continue;
     end
 
-    leftPos = l1;
-    rightPos = r1;
+    leftOptions = l1;
+    rightOptions = r1;
 
     % Short-line policy around curve: skip or merge-prefer.
-    if shortLine(rightPos) && r2 > 0
-        a = angleDiffDeg(lineDir(leftPos, :), lineDir(rightPos, :));
+    if shortLine(r1) && r2 > 0
+        a = angleDiffDeg(lineDir(l1, :), lineDir(r1, :));
         if a >= params.skipAngleDeg || a <= params.mergeAngleDeg
-            rightPos = r2;
+            rightOptions = r2;
         end
     end
-    if shortLine(leftPos) && l2 > 0
-        a = angleDiffDeg(lineDir(leftPos, :), lineDir(rightPos, :));
+    if shortLine(l1) && l2 > 0
+        a = angleDiffDeg(lineDir(l1, :), lineDir(r1, :));
         if a >= params.skipAngleDeg || a <= params.mergeAngleDeg
-            leftPos = l2;
+            leftOptions = l2;
         end
     end
 
-    leftOptions = uniqueNonZero([leftPos, l1, l2]);
-    rightOptions = uniqueNonZero([rightPos, r1, r2]);
+    leftOptions = uniqueNonZero(leftOptions);
+    rightOptions = uniqueNonZero(rightOptions);
     if isempty(leftOptions) || isempty(rightOptions)
         continue;
     end
@@ -156,7 +151,6 @@ for k = 1:maxOut
     outB(outCount) = sortedToOrig(bestR);
     outCurvePos(outCount) = cPos;
     outFeature(outCount) = fIdx;
-    outScore(outCount) = bestScore;
 end
 
 if outCount == 0
@@ -168,24 +162,17 @@ keys = [min(outA(1:outCount), outB(1:outCount)), ...
         outFeature(1:outCount)];
 [~, keep] = unique(keys, 'rows', 'stable');
 
-selA = outA(keep);
-selB = outB(keep);
-selCurvePos = outCurvePos(keep);
-selFeature = outFeature(keep);
-selScore = outScore(keep);
-
-chosen = selectFourConsoles(selA, selB, selScore, segments, contourSpan);
-m = numel(chosen);
+m = numel(keep);
 consoles = repmat(struct('lineA_idx', 0, 'lineB_idx', 0, ...
     'curveFeature', struct('idx', 0, 'curve_idx', 0, 'x', 0, 'y', 0)), m, 1);
 
 for i = 1:m
-    src = chosen(i);
-    fIdx = selFeature(src);
-    cPos = selCurvePos(src);
+    src = keep(i);
+    fIdx = outFeature(src);
+    cPos = outCurvePos(src);
 
-    consoles(i).lineA_idx = selA(src);
-    consoles(i).lineB_idx = selB(src);
+    consoles(i).lineA_idx = outA(src);
+    consoles(i).lineB_idx = outB(src);
     consoles(i).curveFeature = struct( ...
         'idx', fIdx, ...
         'curve_idx', sortedToOrig(cPos), ...
@@ -193,45 +180,6 @@ for i = 1:m
         'y', contour.y(fIdx));
 end
 
-end
-
-function chosen = selectFourConsoles(lineA, lineB, score, segments, contourSpan)
-n = numel(lineA);
-if n <= 4
-    chosen = (1:n)';
-    return;
-end
-
-relativeLen = zeros(n, 1);
-for i = 1:n
-    lenA = segmentLength(segments{lineA(i)});
-    lenB = segmentLength(segments{lineB(i)});
-    relativeLen(i) = max(lenA, lenB) / contourSpan;
-end
-
-orderSmall = sortrows([(1:n)', relativeLen, score], [2, 3]);
-orderBig = sortrows([(1:n)', -relativeLen, score], [2, 3]);
-chosen = unique([orderSmall(1:2, 1); orderBig(1:2, 1)], 'stable');
-
-if numel(chosen) < 4
-    rest = setdiff(orderSmall(:, 1), chosen, 'stable');
-    need = min(4 - numel(chosen), numel(rest));
-    chosen = [chosen; rest(1:need)];
-elseif numel(chosen) > 4
-    selected = sortrows([chosen, relativeLen(chosen), score(chosen)], [2, 3]);
-    chosen = unique([selected(1:2, 1); selected(end-1:end, 1)], 'stable');
-end
-end
-
-function len = segmentLength(seg)
-if isfield(seg, 'params') && isfield(seg.params, 'line_metrics') && ...
-        isfield(seg.params.line_metrics, 'segment_length')
-    len = double(seg.params.line_metrics.segment_length);
-else
-    dx = diff(double(seg.points_x(:)));
-    dy = diff(double(seg.points_y(:)));
-    len = sum(hypot(dx, dy));
-end
 end
 
 function idx = normalizeIndex(idx, n)
